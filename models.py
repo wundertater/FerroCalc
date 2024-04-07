@@ -2,55 +2,85 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
-def ferromag(init_cond: list | np.ndarray, start, stop, h, coefs: dict):
+def ferromag(init_cond: list | np.ndarray, start, stop, a: float, M_s: float,
+             E_ext: dict = None, E_ca: dict = None, E_demag: dict = None, E_me: dict = None, h=None):
     """
-    Решение уравнения LLG методом Рунге-Кутты 4 порядка
+    Решение уравнения LLG методом Рунге-Кутты 4 порядка для ферромагнетика
     :param init_cond: начальные условия
     :param start: начало отрезка интегрирования (начальное время)
     :param stop: конец отрезка интегрирования (конечное время)
-    :param h: шаг решения
-    :param coefs: коэффициенты уравнения:
-    coefs = {a: float, H: np.ndarray, M_s: float, N_s: ndarray, k_1: float, k_2: float, B_1: float, B_2: float, eps: dict}
-    (a - damping coefficient, H - внешнее поле, M_s - saturation magnetization, N_s - demagnetizing factors (x,y,z),
-    k_1 - anisotropy constant первого порядка, k_2 - второго порядка, B_1 B_2 - magnetoelastic coupling constants,
-    eps - деформации (если какие-то компоненты не заданы то равны 0))
-
+    :param a: damping coefficient (from 0 to 1)
+    :param M_s: saturation magnetization
+    :param E_ext: энергия внешнего поля
+    :param E_ca: энергия кубической анизотропии
+    :param E_demag: энергия размагничивания
+    :param E_me: магнитоупругая энергия
+    :param h: шаг решения (по умолчанию: (stop - start) / 1000)
     :return: (t_val, m_val)
     t_val - значения времени
     m_val - значения вектора m (матрица размера n x 3; первый столбец - компоненты x, второй - y, третий - z)
     m_val = [[m_x0, m_y0, m_z0],[m_x1, m_y1, m_z1], ..., [m_xn, m_yn, m_zn]]
+
+    ---coefficients for energies---
+    * E_ext: {'H'}
+        H: (list | ndarray) - внешнее поле
+    * E_ca: {'K_1', 'K_2'}
+        k_1: (float) - anisotropy constant first order
+        K_2: (float) - anisotropy constant second order
+    * E_demag: {'N_s'}
+        N_s (list | ndarray) - demagnetizing factors [x,y,z]
+    * E_me: {'B_1', 'B_2', 'eps_xx', 'eps_yy', 'eps_zz', 'eps_xy', 'eps_xz', 'eps_yz'}
+        B_1: (float) - magnetoelastic coupling constant
+        B_2: (float) - magnetoelastic coupling constant
+        eps: (float) - deformations (by default, each component is 0)
     """
+
+    if (E_ext is None) and (E_ca is None) and (E_demag is None) and (E_me is None):
+        raise AttributeError("Должно быть хотя бы одно выражение для энергии.")
+    if h is None:
+        h = (stop - start) / 1000
+
     # Коэффициенты
     g = 1.76086 * 10 ** 7  # gyromagnetic ratio of electron (gamma)
-    a = coefs['a']  # damping coefficient
-    H = coefs['H']
-    M_s = coefs['M_s']
-    N_s = np.array(coefs['N_s'])
-    k_1 = coefs['k_1']
-    k_2 = coefs['k_2']
-    B_1 = coefs['B_1']
-    B_2 = coefs['B_2']
-    eps_xx = coefs['eps']['eps_xx'] if 'eps_xx' in coefs['eps'] else 0
-    eps_yy = coefs['eps']['eps_yy'] if 'eps_yy' in coefs['eps'] else 0
-    eps_zz = coefs['eps']['eps_zz'] if 'eps_zz' in coefs['eps'] else 0
-    eps_xy = coefs['eps']['eps_xy'] if 'eps_xy' in coefs['eps'] else 0
-    eps_xz = coefs['eps']['eps_xz'] if 'eps_xz' in coefs['eps'] else 0
-    eps_yz = coefs['eps']['eps_yz'] if 'eps_yz' in coefs['eps'] else 0
+    if E_ext is not None:
+        H = E_ext['H']
+    if E_ca is not None:
+        K_1 = E_ca['K_1']
+        K_2 = E_ca['K_2']
+    if E_demag is not None:
+        N_s = np.array(E_demag['N_s'])
+    if E_me is not None:
+        B_1 = E_me['B_1']
+        B_2 = E_me['B_2']
+        eps_xx = E_me['eps_xx'] if 'eps_xx' in E_me else 0
+        eps_yy = E_me['eps_yy'] if 'eps_yy' in E_me else 0
+        eps_zz = E_me['eps_zz'] if 'eps_zz' in E_me else 0
+        eps_xy = E_me['eps_xy'] if 'eps_xy' in E_me else 0
+        eps_xz = E_me['eps_xz'] if 'eps_xz' in E_me else 0
+        eps_yz = E_me['eps_yz'] if 'eps_yz' in E_me else 0
 
     def energy(m):
         """
         Подсчет полной энергии
         """
-        H_demag = - N_s * m * M_s
-        mx2, my2, mz2 = m[0] ** 2, m[1] ** 2, m[2] ** 2  # Компоненты вектора m в квадрате
+        result = 0
+        m2 = m ** 2
+        mx2, my2, mz2 = m2[0], m2[1], m2[2]  # Компоненты вектора m в квадрате
 
-        E_ca = k_1 * (mx2 * my2 + my2 * mz2 + mx2 * mz2) + k_2 * (mx2 * my2 * mz2)  # Энергия кубической анизотропии
-        E_demag = -0.5 * M_s * np.dot(m, H_demag)  # Энергия размагничивания
-        E_ext = - M_s * np.dot(m, H)  # Энергия от внешнего поля
-        E_me = B_1 * (mx2 * eps_xx + my2 * eps_yy + mz2 * eps_zz) + \
-               2 * B_2 * (m[0] * m[1] * eps_xy + m[0] * m[2] * eps_xz + m[1] * m[2] * eps_yz)  # Магнитоупругая энергия
+        if E_ext is not None:  # Энергия от внешнего поля
+            result -= M_s * np.dot(m, H)
 
-        return E_demag + E_me + E_ca + E_ext
+        if E_ca is not None:  # Энергия кубической анизотропии
+            result += K_1 * (mx2 * my2 + my2 * mz2 + mx2 * mz2) + K_2 * (mx2 * my2 * mz2)
+
+        if E_demag is not None:  # Энергия размагничивания
+            result += 0.5 * M_s ** 2 * np.dot(N_s, m2)
+
+        if E_me is not None:  # Магнитоупругая энергия
+            result += B_1 * (mx2 * eps_xx + my2 * eps_yy + mz2 * eps_zz) + \
+                      2 * B_2 * (m[0] * m[1] * eps_xy + m[0] * m[2] * eps_xz + m[1] * m[2] * eps_yz)
+
+        return result
 
     def llg_equation(m: np.ndarray):
         m = m / np.linalg.norm(m)  # доп. нормировка на входе (bug fixed)
@@ -58,10 +88,11 @@ def ferromag(init_cond: list | np.ndarray, start, stop, h, coefs: dict):
         Уравнение LLG
         :param m: вектор намагниченности
         """
+        h_M_s = h * M_s
         _energy = energy(m)
-        H_eff_x = -(energy(m + [h, 0, 0]) - _energy) / (h * M_s)  # частные производные: dE/dm_x, dE/dm_y, dE/dm_z
-        H_eff_y = -(energy(m + [0, h, 0]) - _energy) / (h * M_s)  # dE/dM = -1/M_s * dE/dm, M=M_s*m
-        H_eff_z = -(energy(m + [0, 0, h]) - _energy) / (h * M_s)
+        H_eff_x = -(energy(m + [h, 0, 0]) - _energy) / h_M_s  # частные производные: dE/dm_x, dE/dm_y, dE/dm_z
+        H_eff_y = -(energy(m + [0, h, 0]) - _energy) / h_M_s  # dE/dM = -1/M_s * dE/dm, M=M_s*m
+        H_eff_z = -(energy(m + [0, 0, h]) - _energy) / h_M_s
         H_eff = [H_eff_x, H_eff_y, H_eff_z]  # полное магнитное поле
 
         mxH = np.cross(m, H_eff)  # первое слагаемое в скобках уравнения (m x H_eff)
@@ -95,14 +126,16 @@ def ferromag(init_cond: list | np.ndarray, start, stop, h, coefs: dict):
 
 
 if __name__ == '__main__':
-    H = [3, 1, 2]
     m_0 = [0, 1, 1]
     m_0 = m_0 / np.linalg.norm(m_0)
-    coefs = {'a': 0.1, 'H': H, 'M_s': 1707, 'N_s': [0, 0, 4 * np.pi],
-             'k_1': 4.2 * 10 ** 5, 'k_2': 1.5 * 10 ** 5, 'B_1': -2.9 * 10 ** 7, 'B_2': 3.2 * 10 ** 7,
-             'eps': {'eps_xx': -0.63, 'eps_yy': -0.63}}
 
-    t, m = ferromag(m_0, 0, 10 ** (-7), 10 ** (-10), coefs)
+    H = [3, 1, 2]
+    E_ext = {'H': H}
+    E_ca = {'K_1': 4.2 * 10 ** 5, 'K_2': 1.5 * 10 ** 5}
+    E_demag = {'N_s': [0, 0, 4 * np.pi]}
+    E_me = {'B_1': -2.9 * 10 ** 7, 'B_2': 3.2 * 10 ** 7, 'eps_xx': -0.63, 'eps_yy': -0.63}
+
+    t, m = ferromag(m_0, 0, 10 ** (-7), a=0.1, M_s=1707, E_ca=E_ca)
     plt.plot(t, [m[i][0] for i in range(len(m))], label='m_x')
     plt.plot(t, [m[i][1] for i in range(len(m))], label='m_y')
     plt.plot(t, [m[i][2] for i in range(len(m))], label='m_z')
@@ -112,5 +145,5 @@ if __name__ == '__main__':
 
     plt.legend()
     plt.grid()
-    plt.savefig('data_llg/result.png')
+    plt.savefig('data_llg/check2.png')
     plt.show()
